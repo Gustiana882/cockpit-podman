@@ -146,7 +146,7 @@ export const EnvVar = ({ id, item, onChange, idx, removeitem, additem, options, 
         </Grid>
     );
 
-export const EnvList = ({ id, items, validationFailed, onValidationChange, onChange }) => {
+export const EnvList = ({ id, items, validationFailed, onValidationChange, onChange, onImport }) => {
     const additem = () => onChange(list => [...list, { envKey: null, envValue: null }]);
 
     const removeitem = idx => {
@@ -171,7 +171,10 @@ export const EnvList = ({ id, items, validationFailed, onValidationChange, onCha
         <FormFieldGroup header={
             <FormFieldGroupHeader
                 titleText={{ text: _("Environment variables"), id: `${id}-title` }}
-                actions={<Button variant="secondary" className="btn-add" onClick={additem}>{_("Add variable")}</Button>}
+                actions={<>
+                    <Button type="button" variant="secondary" className="btn-add" onClick={additem}>{_("Add variable")}</Button>
+                    <Button type="button" variant="secondary" onClick={onImport}>{_("Import .env file")}</Button>
+                </>}
             />
         } className="dynamic-form-group env-form">
             {items.some(item => item !== undefined)
