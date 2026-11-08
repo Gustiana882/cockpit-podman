@@ -41,7 +41,7 @@ import * as utils from './util.js';
 import "./ImageRunModal.scss";
 
 const _ = cockpit.gettext;
-const CONFIG_DIRECTORY = "/etc/cockpit-podman";
+const CONFIG_DIRECTORY = "~/.config/cockpit-podman";
 
 const units = {
     KB: {
@@ -281,18 +281,26 @@ export class ImageRunModal extends React.Component {
         };
     }
 
-    getConfigPath(filename) {
+    getConfigPath(directory, filename) {
         if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\.json$/.test(filename))
             throw new Error(_("Invalid configuration file name"));
 
-        return `${CONFIG_DIRECTORY}/${filename}`;
+        return `${directory}/${filename}`;
     }
 
-    async ensureConfigDirectory() {
-        const options = { superuser: "require", err: "message" };
-        await cockpit.spawn(["mkdir", "-p", "-m", "700", "--", CONFIG_DIRECTORY], options);
-        await cockpit.spawn(["chown", "root:root", "--", CONFIG_DIRECTORY], options);
-        await cockpit.spawn(["chmod", "700", "--", CONFIG_DIRECTORY], options);
+    async getConfigDirectory() {
+        const home = await cockpit.spawn(["printenv", "HOME"], { err: "message" });
+        const path = home.replace(/[\r\n]+$/, "");
+        if (!path.startsWith("/") || /[\r\n]/.test(path))
+            throw new Error(_("Could not determine the current user's home directory"));
+
+        return `${path}/.config/cockpit-podman`;
+    }
+
+    async ensureConfigDirectory(directory) {
+        const options = { err: "message" };
+        await cockpit.spawn(["mkdir", "-p", "-m", "700", "--", directory], options);
+        await cockpit.spawn(["chmod", "700", "--", directory], options);
     }
 
     async saveConfigIfEnabled() {
@@ -301,16 +309,17 @@ export class ImageRunModal extends React.Component {
 
         try {
             const name = this.state.containerName.replace(/[^A-Za-z0-9_.-]/g, "_").replace(/^[^A-Za-z0-9]+/, "") || "container";
-            const path = this.getConfigPath(`${name}.json`);
-            await this.ensureConfigDirectory();
+            const directory = await this.getConfigDirectory();
+            const path = this.getConfigPath(directory, `${name}.json`);
+            await this.ensureConfigDirectory(directory);
 
-            const file = cockpit.file(path, { superuser: "require" });
+            const file = cockpit.file(path);
             try {
                 await file.replace(JSON.stringify(this.getSavedConfig(), null, 2));
             } finally {
                 file.close();
             }
-            await cockpit.spawn(["chmod", "600", "--", path], { superuser: "require", err: "message" });
+            await cockpit.spawn(["chmod", "600", "--", path], { err: "message" });
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error);
             this.props.onAddNotification({
@@ -324,10 +333,11 @@ export class ImageRunModal extends React.Component {
     refreshSavedConfigs = async () => {
         this.setState({ loadingConfigs: true, configError: null });
         try {
-            await this.ensureConfigDirectory();
+            const directory = await this.getConfigDirectory();
+            await this.ensureConfigDirectory(directory);
             const output = await cockpit.spawn(
-                ["find", CONFIG_DIRECTORY, "-maxdepth", "1", "-type", "f", "-name", "*.json", "-printf", "%f\\n"],
-                { superuser: "require", err: "message" }
+                ["find", directory, "-maxdepth", "1", "-type", "f", "-name", "*.json", "-printf", "%f\\n"],
+                { err: "message" }
             );
             const savedConfigs = output.trim().split("\n").filter(filename => {
                 return filename && /^[A-Za-z0-9][A-Za-z0-9_.-]*\.json$/.test(filename);
@@ -351,7 +361,8 @@ export class ImageRunModal extends React.Component {
         this.setState({ configError: null });
         let file;
         try {
-            file = cockpit.file(this.getConfigPath(this.state.selectedConfigFile), { superuser: "require" });
+            const directory = await this.getConfigDirectory();
+            file = cockpit.file(this.getConfigPath(directory, this.state.selectedConfigFile));
             const contents = await file.read();
             const savedConfig = JSON.parse(contents);
             const settings = savedConfig?.settings;
@@ -1070,31 +1081,27 @@ export class ImageRunModal extends React.Component {
             <Form onKeyDown={e => e.key === 'Enter' && e.preventDefault()}>
                 {this.state.dialogError && <ErrorNotification errorMessage={this.state.dialogError} errorDetail={this.state.dialogErrorDetail} />}
                 <FormGroup fieldId="run-image-dialog-saved-config" label={_("Saved configuration")}>
-                    <Grid hasGutter>
-                        <GridItem span={6}>
-                            <FormSelect
-                                id="run-image-dialog-saved-config"
-                                value={dialogValues.selectedConfigFile}
-                                onChange={(_event, value) => this.onValueChanged("selectedConfigFile", value)}
-                                isDisabled={dialogValues.savedConfigs.length === 0}
-                            >
-                                <FormSelectOption value="" label={_("Select a configuration")} isPlaceholder />
-                                {dialogValues.savedConfigs.map(filename => (
-                                    <FormSelectOption key={filename} value={filename} label={filename} />
-                                ))}
-                            </FormSelect>
-                        </GridItem>
-                        <GridItem span={3}>
+                    <div className="saved-config-controls">
+                        <FormSelect
+                            id="run-image-dialog-saved-config"
+                            value={dialogValues.selectedConfigFile}
+                            onChange={(_event, value) => this.onValueChanged("selectedConfigFile", value)}
+                            isDisabled={dialogValues.savedConfigs.length === 0}
+                        >
+                            <FormSelectOption value="" label={_("Select a configuration")} isPlaceholder />
+                            {dialogValues.savedConfigs.map(filename => (
+                                <FormSelectOption key={filename} value={filename} label={filename} />
+                            ))}
+                        </FormSelect>
+                        <div className="saved-config-actions">
                             <Button id="run-image-dialog-saved-config-refresh" type="button" variant="secondary" onClick={this.refreshSavedConfigs} isLoading={dialogValues.loadingConfigs}>
                                 {_("Refresh")}
                             </Button>
-                        </GridItem>
-                        <GridItem span={3}>
                             <Button id="run-image-dialog-saved-config-load" type="button" variant="secondary" onClick={this.loadSavedConfig} isDisabled={!dialogValues.selectedConfigFile}>
                                 {_("Load")}
                             </Button>
-                        </GridItem>
-                    </Grid>
+                        </div>
+                    </div>
                     {dialogValues.configError &&
                         <ErrorNotification errorMessage={_("Configuration error")} errorDetail={dialogValues.configError} />}
                 </FormGroup>
@@ -1235,7 +1242,7 @@ export class ImageRunModal extends React.Component {
                                     label={cockpit.format(_("Save configuration in $0 after successful creation"), CONFIG_DIRECTORY)}
                                     onChange={(_event, checked) => this.onValueChanged("saveConfig", checked)}
                                 />
-                                <FormHelper helperText={_("Configuration files are readable only by root; they may contain secrets.")} />
+                                <FormHelper helperText={_("Configuration files are private to the current account and may contain secrets.")} />
                             </FormGroup>
 
                             <FormGroup fieldId='run-image-dialog-memory' label={_("Memory limit")}>

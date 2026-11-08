@@ -4,6 +4,7 @@
 # "class Browser" and "class MachineCase" for the available API.
 
 import re
+import shlex
 import sys
 import time
 from contextlib import contextmanager
@@ -2657,13 +2658,14 @@ Yaml={name}.yaml
     def testSavedContainerConfig(self) -> None:
         b = self.browser
         container_name = "saved-config-roundtrip"
-        config_path = f"/etc/cockpit-podman/{container_name}.json"
-        self.login(system=True)
-        self.execute(f"podman rm -f {container_name} >/dev/null 2>&1 || true; rm -f {config_path}", system=True)
-        self.execute("mkdir -p /tmp/saved-config-test", system=True)
+        config_directory = f"{self.execute('printf %s \"$HOME\"', system=False).strip()}/.config/cockpit-podman"
+        config_path = f"{config_directory}/{container_name}.json"
+        self.login(system=False)
+        self.execute(f"podman rm -f {container_name} >/dev/null 2>&1 || true; rm -f {shlex.quote(config_path)}", system=False)
+        self.execute("mkdir -p /tmp/saved-config-test", system=False)
         showImages(b)
         b.wait_visible(f'#containers-images td[data-label="Image"]:contains("{IMG_BUSYBOX}")')
-        self.openCreateContainerDialog(IMG_BUSYBOX_LATEST, system=True)
+        self.openCreateContainerDialog(IMG_BUSYBOX_LATEST, system=False)
         b.set_input_text("#run-image-dialog-name", container_name)
         b.set_checked("#run-image-dialog-save-config", val=True)
         b.click("#pf-tab-1-create-image-dialog-tab-integration")
@@ -2678,9 +2680,9 @@ Yaml={name}.yaml
         b.click("#create-image-create-btn")
         b.wait_not_present(".pf-v6-c-modal-box")
         self.waitContainerRow(container_name)
-        self.assertEqual(self.execute(f"stat -c %a {config_path}", system=True).strip(), "600")
+        self.assertEqual(self.execute(f"stat -c %a {shlex.quote(config_path)}", system=False).strip(), "600")
 
-        self.openCreateContainerDialog(IMG_BUSYBOX_LATEST, system=True)
+        self.openCreateContainerDialog(IMG_BUSYBOX_LATEST, system=False)
         b.click("#run-image-dialog-saved-config-refresh")
         b.wait_visible(f'#run-image-dialog-saved-config option[value="{container_name}.json"]')
         b.set_val("#run-image-dialog-saved-config", f"{container_name}.json")
@@ -2695,8 +2697,8 @@ Yaml={name}.yaml
         b.click(".pf-v6-c-modal-box .btn-cancel")
         b.wait_not_present(".pf-v6-c-modal-box")
 
-        self.execute(f"podman rm -f {container_name}; rm -f {config_path}", system=True)
-        self.execute("rmdir /tmp/saved-config-test", system=True)
+        self.execute(f"podman rm -f {container_name}; rm -f {shlex.quote(config_path)}", system=False)
+        self.execute("rmdir /tmp/saved-config-test", system=False)
 
     def testCreateContainerValidation(self) -> None:
         def validateField(groupSelector: str, value: str, errorMessage: str, resetValue: str = "") -> None:
