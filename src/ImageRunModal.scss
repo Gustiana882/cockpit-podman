@@ -55,6 +55,22 @@
     }
 }
 
+.saved-config-controls {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pf-t--global--spacer--sm);
+
+    .pf-v6-c-form-control {
+        inline-size: 100%;
+    }
+}
+
+.saved-config-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--pf-t--global--spacer--sm);
+}
+
 // HACK: It is not possible to mix vertical and horizontal areas within a form. So lets hack it until it is supported
 // upstream by utilizing the upstream code for the FormSection as well.
 // Issue exists since: 2025-08-29. PF v6.2.3
