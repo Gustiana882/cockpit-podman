@@ -1099,23 +1099,6 @@ export class ImageRunModal extends React.Component {
                     </Tab>
                     <Tab eventKey={1} title={<TabTitleText>{_("Integration")}</TabTitleText>} id="create-image-dialog-tab-integration">
                         <FormSection>
-                            <Button type="button" variant="secondary" onClick={() => this.envFileInput.current?.click()}>
-                                {_("Import .env file")}
-                            </Button>
-                            <input
-                                id="run-image-dialog-env-file"
-                                ref={this.envFileInput}
-                                type="file"
-                                accept=".env,text/plain"
-                                hidden
-                                aria-label={_("Import .env file")}
-                                onChange={this.handleEnvFileChange}
-                            />
-                            {dialogValues.envImportError &&
-                                <ErrorNotification
-                                    errorMessage={_("Failed to import environment file")}
-                                    errorDetail={dialogValues.envImportError}
-                                />}
                             <DynamicListForm id='run-image-dialog-publish'
                                  emptyStateString={_("No ports exposed")}
                                  formclass='publish-port-form'
@@ -1138,12 +1121,27 @@ export class ImageRunModal extends React.Component {
                                  options={{ selinuxAvailable }}
                                  itemcomponent={Volume} />
 
+                            <input
+                                id="run-image-dialog-env-file"
+                                ref={this.envFileInput}
+                                type="file"
+                                accept=".env,text/plain"
+                                hidden
+                                aria-label={_("Import .env file")}
+                                onChange={this.handleEnvFileChange}
+                            />
+                            {dialogValues.envImportError &&
+                                <ErrorNotification
+                                    errorMessage={_("Failed to import environment file")}
+                                    errorDetail={dialogValues.envImportError}
+                                />}
                             <EnvList
                                 id="run-image-dialog-env"
                                 items={dialogValues.env}
                                 validationFailed={dialogValues.validationFailed.env}
                                 onValidationChange={value => this.dynamicListOnValidationChange('env', value)}
                                 onChange={items => this.onEnvItemsChanged(items)}
+                                onImport={() => this.envFileInput.current?.click()}
                             />
                         </FormSection>
                     </Tab>
