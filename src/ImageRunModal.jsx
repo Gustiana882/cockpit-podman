@@ -21,7 +21,6 @@ import { Bullseye } from "@patternfly/react-core/dist/esm/layouts/Bullseye/index
 import { Flex, FlexItem } from "@patternfly/react-core/dist/esm/layouts/Flex";
 import { Grid, GridItem } from "@patternfly/react-core/dist/esm/layouts/Grid";
 import { OutlinedQuestionCircleIcon } from '@patternfly/react-icons';
-import { DynamicListForm } from 'cockpit-components-dynamic-list.jsx';
 import { FormHelper } from "cockpit-components-form-helper.jsx";
 import * as dockerNames from 'docker-names';
 import { debounce } from 'throttle-debounce';
@@ -30,6 +29,7 @@ import cockpit from 'cockpit';
 import { TypeaheadSelect } from 'cockpit-components-typeahead-select';
 
 import { onDownloadContainer, onDownloadContainerFinished } from './Containers.jsx';
+import { DynamicList } from './DynamicList.jsx';
 import { EnvList, parseEnvFile, validateEnvVar } from './Env.jsx';
 import { ErrorNotification } from './Notification.tsx';
 import { PublishPort, validatePublishPort } from './PublishPort.jsx';
@@ -41,6 +41,7 @@ import * as utils from './util.js';
 import "./ImageRunModal.scss";
 
 const _ = cockpit.gettext;
+const CONFIG_DIRECTORY = "/etc/cockpit-podman";
 
 const units = {
     KB: {
@@ -125,6 +126,11 @@ export class ImageRunModal extends React.Component {
             healthcheck_start_period: 0,
             healthcheck_retries: 3,
             healthcheck_action: 0,
+            saveConfig: false,
+            savedConfigs: [],
+            selectedConfigFile: "",
+            configError: null,
+            loadingConfigs: false,
         };
         this.envFileInput = React.createRef();
         this.getCreateConfig = this.getCreateConfig.bind(this);
@@ -153,7 +159,7 @@ export class ImageRunModal extends React.Component {
         if (this.state.image) {
             createConfig.image = this.state.image.RepoTags ? this.state.image.RepoTags[0] : "";
         } else {
-            let img = this.state.selectedImage.Name;
+            let img = typeof this.state.selectedImage === "string" ? this.state.selectedImage : this.state.selectedImage.Name;
             // Make implicit :latest
             if (!img.includes(":")) {
                 img += ":latest";
@@ -236,13 +242,205 @@ export class ImageRunModal extends React.Component {
         return createConfig;
     }
 
+    getSavedConfig() {
+        const image = this.state.image
+            ? (this.state.image.RepoTags ? this.state.image.RepoTags[0] : "")
+            : (typeof this.state.selectedImage === "string" ? this.state.selectedImage : this.state.selectedImage?.Name);
+
+        return {
+            format: "cockpit-podman-config",
+            version: 1,
+            settings: {
+                containerName: this.state.containerName,
+                image,
+                command: this.state.command,
+                entrypoint: this.state.entrypoint,
+                env: this.state.env.filter(item => item !== undefined).map(item => ({
+                    envKey: item.envKey,
+                    envValue: item.envValue || "",
+                })),
+                hasTTY: this.state.hasTTY,
+                publish: this.state.publish.filter(port => port !== undefined),
+                volumes: this.state.volumes.filter(volume => volume !== undefined),
+                memory: this.state.memory,
+                cpuShares: this.state.cpuShares,
+                memoryConfigure: this.state.memoryConfigure,
+                cpuSharesConfigure: this.state.cpuSharesConfigure,
+                memoryUnit: this.state.memoryUnit,
+                restartPolicy: this.state.restartPolicy,
+                restartTries: this.state.restartTries,
+                pullLatestImage: this.state.pullLatestImage,
+                healthcheck_command: this.state.healthcheck_command,
+                healthcheck_interval: this.state.healthcheck_interval,
+                healthcheck_timeout: this.state.healthcheck_timeout,
+                healthcheck_start_period: this.state.healthcheck_start_period,
+                healthcheck_retries: this.state.healthcheck_retries,
+                healthcheck_action: this.state.healthcheck_action,
+                ownerUid: this.state.owner.uid,
+            },
+        };
+    }
+
+    getConfigPath(filename) {
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\.json$/.test(filename))
+            throw new Error(_("Invalid configuration file name"));
+
+        return `${CONFIG_DIRECTORY}/${filename}`;
+    }
+
+    async ensureConfigDirectory() {
+        const options = { superuser: "require", err: "message" };
+        await cockpit.spawn(["mkdir", "-p", "-m", "700", "--", CONFIG_DIRECTORY], options);
+        await cockpit.spawn(["chown", "root:root", "--", CONFIG_DIRECTORY], options);
+        await cockpit.spawn(["chmod", "700", "--", CONFIG_DIRECTORY], options);
+    }
+
+    async saveConfigIfEnabled() {
+        if (!this.state.saveConfig)
+            return;
+
+        try {
+            const name = this.state.containerName.replace(/[^A-Za-z0-9_.-]/g, "_").replace(/^[^A-Za-z0-9]+/, "") || "container";
+            const path = this.getConfigPath(`${name}.json`);
+            await this.ensureConfigDirectory();
+
+            const file = cockpit.file(path, { superuser: "require" });
+            try {
+                await file.replace(JSON.stringify(this.getSavedConfig(), null, 2));
+            } finally {
+                file.close();
+            }
+            await cockpit.spawn(["chmod", "600", "--", path], { superuser: "require", err: "message" });
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            this.props.onAddNotification({
+                type: "danger",
+                error: _("Container was created, but its configuration could not be saved"),
+                errorDetail: detail,
+            });
+        }
+    }
+
+    refreshSavedConfigs = async () => {
+        this.setState({ loadingConfigs: true, configError: null });
+        try {
+            await this.ensureConfigDirectory();
+            const output = await cockpit.spawn(
+                ["find", CONFIG_DIRECTORY, "-maxdepth", "1", "-type", "f", "-name", "*.json", "-printf", "%f\\n"],
+                { superuser: "require", err: "message" }
+            );
+            const savedConfigs = output.trim().split("\n").filter(filename => {
+                return filename && /^[A-Za-z0-9][A-Za-z0-9_.-]*\.json$/.test(filename);
+            });
+            this.setState({
+                savedConfigs,
+                selectedConfigFile: savedConfigs.includes(this.state.selectedConfigFile) ? this.state.selectedConfigFile : "",
+            });
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            this.setState({ configError: detail });
+        } finally {
+            this.setState({ loadingConfigs: false });
+        }
+    };
+
+    loadSavedConfig = async () => {
+        if (!this.state.selectedConfigFile)
+            return;
+
+        this.setState({ configError: null });
+        let file;
+        try {
+            file = cockpit.file(this.getConfigPath(this.state.selectedConfigFile), { superuser: "require" });
+            const contents = await file.read();
+            const savedConfig = JSON.parse(contents);
+            const settings = savedConfig?.settings;
+            if (savedConfig?.format !== "cockpit-podman-config" || savedConfig.version !== 1 ||
+                    !settings || typeof settings !== "object" || Array.isArray(settings) ||
+                    typeof settings.containerName !== "string" || !settings.containerName ||
+                    typeof settings.image !== "string" || !settings.image ||
+                    typeof settings.command !== "string" || typeof settings.entrypoint !== "string" ||
+                    typeof settings.hasTTY !== "boolean" || typeof settings.memoryConfigure !== "boolean" ||
+                    typeof settings.cpuSharesConfigure !== "boolean" || typeof settings.pullLatestImage !== "boolean" ||
+                    !["KB", "MB", "GB"].includes(settings.memoryUnit) ||
+                    !["no", "on-failure", "always"].includes(settings.restartPolicy) ||
+                    !Number.isFinite(settings.memory) || !Number.isFinite(settings.cpuShares) ||
+                    !Number.isFinite(settings.restartTries) ||
+                    !Number.isFinite(settings.healthcheck_interval) || !Number.isFinite(settings.healthcheck_timeout) ||
+                    !Number.isFinite(settings.healthcheck_start_period) || !Number.isFinite(settings.healthcheck_retries) ||
+                    !Number.isFinite(settings.healthcheck_action) ||
+                    typeof settings.healthcheck_command !== "string" ||
+                    !(settings.ownerUid === null || Number.isInteger(settings.ownerUid)) ||
+                    !Array.isArray(settings.env) ||
+                    !Array.isArray(settings.publish) || !Array.isArray(settings.volumes) ||
+                    !settings.env.every(item => item && typeof item.envKey === "string" && typeof item.envValue === "string") ||
+                    !settings.publish.every(port => port && typeof port === "object" &&
+                        (port.IP === null || typeof port.IP === "string") &&
+                        (port.hostPort === null || typeof port.hostPort === "string") &&
+                        (port.containerPort === null || typeof port.containerPort === "string") &&
+                        ["tcp", "udp"].includes(port.protocol)) ||
+                    !settings.volumes.every(volume => volume && typeof volume === "object" &&
+                        (volume.hostPath === null || typeof volume.hostPath === "string") &&
+                        (volume.containerPath === null || typeof volume.containerPath === "string") &&
+                        ["rw", "ro"].includes(volume.mode) &&
+                        (volume.selinux === null || volume.selinux === undefined || ["z", "Z"].includes(volume.selinux))))
+                throw new Error(_("Configuration file is invalid or has an unsupported version"));
+
+            const imageName = this.props.image
+                ? (this.props.image.RepoTags ? this.props.image.RepoTags[0] : "")
+                : null;
+            if (imageName && settings.image !== imageName)
+                throw new Error(_("This configuration uses a different image than the selected image"));
+
+            const owner = this.props.pod
+                ? this.state.owner
+                : this.props.users.find(user => user.uid === settings.ownerUid) || this.state.owner;
+            this.setState({
+                containerName: settings.containerName,
+                command: settings.command,
+                entrypoint: settings.entrypoint,
+                env: settings.env,
+                hasTTY: settings.hasTTY,
+                publish: settings.publish,
+                volumes: settings.volumes,
+                memory: settings.memory,
+                cpuShares: settings.cpuShares,
+                memoryConfigure: settings.memoryConfigure,
+                cpuSharesConfigure: settings.cpuSharesConfigure,
+                memoryUnit: settings.memoryUnit,
+                restartPolicy: settings.restartPolicy,
+                restartTries: settings.restartTries,
+                pullLatestImage: settings.pullLatestImage,
+                healthcheck_command: settings.healthcheck_command,
+                healthcheck_interval: settings.healthcheck_interval,
+                healthcheck_timeout: settings.healthcheck_timeout,
+                healthcheck_start_period: settings.healthcheck_start_period,
+                healthcheck_retries: settings.healthcheck_retries,
+                healthcheck_action: settings.healthcheck_action,
+                image: this.props.image || "",
+                selectedImage: this.props.image ? this.state.selectedImage : settings.image,
+                owner,
+                validationFailed: {},
+                configError: null,
+            });
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            this.setState({ configError: detail });
+        } finally {
+            file?.close();
+        }
+    };
+
     createContainer = (con, createConfig, runImage) => {
         const Dialogs = this.props.dialogs;
         client.createContainer(con, createConfig)
                 .then(reply => {
                     if (runImage) {
                         client.postContainer(con, "start", reply.Id, {})
-                                .then(() => Dialogs.close())
+                                .then(async () => {
+                                    await this.saveConfigIfEnabled();
+                                    Dialogs.close();
+                                })
                                 .catch(ex => {
                                     // If container failed to start remove it, so a user can fix the settings and retry and
                                     // won't get another error that the container name is already taken.
@@ -263,7 +461,7 @@ export class ImageRunModal extends React.Component {
                                             });
                                 });
                     } else {
-                        Dialogs.close();
+                        this.saveConfigIfEnabled().then(Dialogs.close);
                     }
                 })
                 .catch(ex => {
@@ -316,12 +514,17 @@ export class ImageRunModal extends React.Component {
                         .then(reply => {
                             if (runImage) {
                                 client.postContainer(con, "start", reply.Id, {})
-                                        .then(() => onDownloadContainerFinished(createConfig))
+                                        .then(async () => {
+                                            await this.saveConfigIfEnabled();
+                                            onDownloadContainerFinished(createConfig);
+                                        })
                                         .catch(ex => {
                                             onDownloadContainerFinished(createConfig);
                                             const error = cockpit.format(_("Failed to run container $0"), tempImage.name);
                                             this.props.onAddNotification({ type: 'danger', error, errorDetail: ex.message });
                                         });
+                            } else {
+                                this.saveConfigIfEnabled();
                             }
                         })
                         .catch(ex => {
@@ -342,11 +545,11 @@ export class ImageRunModal extends React.Component {
         this.setState({ [key]: value });
     }
 
-    onEnvItemsChanged(items) {
+    onListChanged(key, items) {
         if (typeof items === 'function')
-            this.setState(state => ({ env: items(state.env) }));
+            this.setState(state => ({ [key]: items(state[key]) }));
         else
-            this.onValueChanged('env', items);
+            this.onValueChanged(key, items);
     }
 
     handleEnvFileChange = async event => {
@@ -817,7 +1020,9 @@ export class ImageRunModal extends React.Component {
             imageListOptions = this.filterImages();
         }
 
-        const localImage = this.state.image || (selectedImage && this.props.localImages.some(img => img.Id === selectedImage.Id));
+        const localImage = this.state.image || (selectedImage && this.props.localImages.some(img => {
+            return typeof selectedImage === "string" ? img.Name === selectedImage : img.Id === selectedImage.Id;
+        }));
         const podmanRegistries = registries?.search ? registries.search : utils.fallbackRegistries;
 
         // Add the search component
@@ -864,6 +1069,35 @@ export class ImageRunModal extends React.Component {
         const defaultBody = (
             <Form onKeyDown={e => e.key === 'Enter' && e.preventDefault()}>
                 {this.state.dialogError && <ErrorNotification errorMessage={this.state.dialogError} errorDetail={this.state.dialogErrorDetail} />}
+                <FormGroup fieldId="run-image-dialog-saved-config" label={_("Saved configuration")}>
+                    <Grid hasGutter>
+                        <GridItem span={6}>
+                            <FormSelect
+                                id="run-image-dialog-saved-config"
+                                value={dialogValues.selectedConfigFile}
+                                onChange={(_event, value) => this.onValueChanged("selectedConfigFile", value)}
+                                isDisabled={dialogValues.savedConfigs.length === 0}
+                            >
+                                <FormSelectOption value="" label={_("Select a configuration")} isPlaceholder />
+                                {dialogValues.savedConfigs.map(filename => (
+                                    <FormSelectOption key={filename} value={filename} label={filename} />
+                                ))}
+                            </FormSelect>
+                        </GridItem>
+                        <GridItem span={3}>
+                            <Button id="run-image-dialog-saved-config-refresh" type="button" variant="secondary" onClick={this.refreshSavedConfigs} isLoading={dialogValues.loadingConfigs}>
+                                {_("Refresh")}
+                            </Button>
+                        </GridItem>
+                        <GridItem span={3}>
+                            <Button id="run-image-dialog-saved-config-load" type="button" variant="secondary" onClick={this.loadSavedConfig} isDisabled={!dialogValues.selectedConfigFile}>
+                                {_("Load")}
+                            </Button>
+                        </GridItem>
+                    </Grid>
+                    {dialogValues.configError &&
+                        <ErrorNotification errorMessage={_("Configuration error")} errorDetail={dialogValues.configError} />}
+                </FormGroup>
                 <FormGroup id="image-name-group" fieldId='run-image-dialog-name' label={_("Name")} className="ct-m-horizontal">
                     <TextInput id='run-image-dialog-name'
                            className="image-name"
@@ -994,6 +1228,15 @@ export class ImageRunModal extends React.Component {
                                     label={_("With terminal")}
                                     onChange={(_event, checked) => this.onValueChanged('hasTTY', checked)} />
                             </FormGroup>
+                            <FormGroup fieldId="run-image-dialog-save-config">
+                                <Checkbox
+                                    id="run-image-dialog-save-config"
+                                    isChecked={dialogValues.saveConfig}
+                                    label={cockpit.format(_("Save configuration in $0 after successful creation"), CONFIG_DIRECTORY)}
+                                    onChange={(_event, checked) => this.onValueChanged("saveConfig", checked)}
+                                />
+                                <FormHelper helperText={_("Configuration files are readable only by root; they may contain secrets.")} />
+                            </FormGroup>
 
                             <FormGroup fieldId='run-image-dialog-memory' label={_("Memory limit")}>
                                 <Flex alignItems={{ default: 'alignItemsCenter' }} className="ct-input-group-spacer-sm modal-run-limiter" id="run-image-dialog-memory-limit">
@@ -1099,24 +1342,26 @@ export class ImageRunModal extends React.Component {
                     </Tab>
                     <Tab eventKey={1} title={<TabTitleText>{_("Integration")}</TabTitleText>} id="create-image-dialog-tab-integration">
                         <FormSection>
-                            <DynamicListForm id='run-image-dialog-publish'
+                            <DynamicList id='run-image-dialog-publish'
                                  emptyStateString={_("No ports exposed")}
                                  formclass='publish-port-form'
                                  label={_("Port mapping")}
                                  actionLabel={_("Add port mapping")}
+                                 items={dialogValues.publish}
                                  validationFailed={dialogValues.validationFailed.publish}
                                  onValidationChange={value => this.dynamicListOnValidationChange('publish', value)}
-                                 onChange={value => this.onValueChanged('publish', value)}
+                                 onChange={value => this.onListChanged('publish', value)}
                                  default={{ IP: null, containerPort: null, hostPort: null, protocol: 'tcp' }}
                                  itemcomponent={PublishPort} />
-                            <DynamicListForm id='run-image-dialog-volume'
+                            <DynamicList id='run-image-dialog-volume'
                                  emptyStateString={_("No volumes specified")}
                                  formclass='volume-form'
                                  label={_("Volumes")}
                                  actionLabel={_("Add volume")}
+                                 items={dialogValues.volumes}
                                  validationFailed={dialogValues.validationFailed.volumes}
                                  onValidationChange={value => this.dynamicListOnValidationChange('volumes', value)}
-                                 onChange={value => this.onValueChanged('volumes', value)}
+                                 onChange={value => this.onListChanged('volumes', value)}
                                  default={{ containerPath: null, hostPath: null, mode: 'rw' }}
                                  options={{ selinuxAvailable }}
                                  itemcomponent={Volume} />
@@ -1140,7 +1385,7 @@ export class ImageRunModal extends React.Component {
                                 items={dialogValues.env}
                                 validationFailed={dialogValues.validationFailed.env}
                                 onValidationChange={value => this.dynamicListOnValidationChange('env', value)}
-                                onChange={items => this.onEnvItemsChanged(items)}
+                                onChange={items => this.onListChanged('env', items)}
                                 onImport={() => this.envFileInput.current?.click()}
                             />
                         </FormSection>

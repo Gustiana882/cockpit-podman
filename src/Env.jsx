@@ -2,9 +2,7 @@
 import React from 'react';
 
 import { Button } from "@patternfly/react-core/dist/esm/components/Button";
-import { EmptyState, EmptyStateBody } from "@patternfly/react-core/dist/esm/components/EmptyState";
-import { FormFieldGroup, FormFieldGroupHeader, FormGroup } from "@patternfly/react-core/dist/esm/components/Form";
-import { HelperText, HelperTextItem } from "@patternfly/react-core/dist/esm/components/HelperText";
+import { FormGroup } from "@patternfly/react-core/dist/esm/components/Form";
 import { TextInput } from "@patternfly/react-core/dist/esm/components/TextInput";
 import { Grid } from "@patternfly/react-core/dist/esm/layouts/Grid";
 import { TrashIcon } from '@patternfly/react-icons';
@@ -12,6 +10,7 @@ import { FormHelper } from "cockpit-components-form-helper.jsx";
 
 import cockpit from 'cockpit';
 
+import { DynamicList } from './DynamicList.jsx';
 import * as utils from './util.js';
 
 const _ = cockpit.gettext;
@@ -146,67 +145,20 @@ export const EnvVar = ({ id, item, onChange, idx, removeitem, additem, options, 
         </Grid>
     );
 
-export const EnvList = ({ id, items, validationFailed, onValidationChange, onChange, onImport }) => {
-    const additem = () => onChange(list => [...list, { envKey: null, envValue: null }]);
-
-    const removeitem = idx => {
-        onChange(list => {
-            const newItems = [...list];
-            delete newItems[idx];
-            return newItems;
-        });
-
-        const newValidation = validationFailed ? [...validationFailed] : [];
-        delete newValidation[idx];
-        onValidationChange(newValidation);
-    };
-
-    const onItemChange = (idx, field, value) => onChange(list => {
-        const newItems = [...list];
-        newItems[idx] = { ...newItems[idx], [field]: value || null };
-        return newItems;
-    });
-
-    return (
-        <FormFieldGroup header={
-            <FormFieldGroupHeader
-                titleText={{ text: _("Environment variables"), id: `${id}-title` }}
-                actions={<>
-                    <Button type="button" variant="secondary" className="btn-add" onClick={additem}>{_("Add variable")}</Button>
-                    <Button type="button" variant="secondary" onClick={onImport}>{_("Import .env file")}</Button>
-                </>}
-            />
-        } className="dynamic-form-group env-form">
-            {items.some(item => item !== undefined)
-                ? <>
-                    {items.map((item, idx) => {
-                        if (item === undefined)
-                            return null;
-
-                        return <EnvVar
-                            key={idx}
-                            id={`${id}-${idx}`}
-                            item={item}
-                            idx={idx}
-                            onChange={onItemChange}
-                            additem={additem}
-                            removeitem={removeitem}
-                            options={{ itemCount: items.length }}
-                            validationFailed={validationFailed?.[idx]}
-                            onValidationChange={value => {
-                                const newValidation = validationFailed ? [...validationFailed] : [];
-                                newValidation[idx] = value;
-                                if (Object.keys(value).length === 0)
-                                    delete newValidation[idx];
-                                onValidationChange(newValidation);
-                            }}
-                        />;
-                    })}
-                    <HelperText>
-                        <HelperTextItem>{_("Paste one or more lines of key=value pairs into any field for bulk import")}</HelperTextItem>
-                    </HelperText>
-                </>
-                : <EmptyState><EmptyStateBody>{_("No environment variables specified")}</EmptyStateBody></EmptyState>}
-        </FormFieldGroup>
-    );
-};
+export const EnvList = ({ id, items, validationFailed, onValidationChange, onChange, onImport }) => (
+    <DynamicList
+        id={id}
+        label={_("Environment variables")}
+        actionLabel={_("Add variable")}
+        emptyStateString={_("No environment variables specified")}
+        formclass="env-form"
+        default={{ envKey: null, envValue: null }}
+        items={items}
+        validationFailed={validationFailed}
+        onValidationChange={onValidationChange}
+        onChange={onChange}
+        helperText={_("Paste one or more lines of key=value pairs into any field for bulk import")}
+        itemcomponent={EnvVar}
+        headerActions={<Button type="button" variant="secondary" onClick={onImport}>{_("Import .env file")}</Button>}
+    />
+);
