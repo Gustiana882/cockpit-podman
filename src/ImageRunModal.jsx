@@ -406,7 +406,7 @@ export class ImageRunModal extends React.Component {
             const owner = this.props.pod
                 ? this.state.owner
                 : this.props.users.find(user => user.uid === settings.ownerUid) || this.state.owner;
-            this.setState({
+            this.setState(prevState => ({
                 containerName: settings.containerName,
                 command: settings.command,
                 entrypoint: settings.entrypoint,
@@ -429,11 +429,11 @@ export class ImageRunModal extends React.Component {
                 healthcheck_retries: settings.healthcheck_retries,
                 healthcheck_action: settings.healthcheck_action,
                 image: this.props.image || "",
-                selectedImage: this.props.image ? this.state.selectedImage : settings.image,
+                selectedImage: this.props.image ? prevState.selectedImage : settings.image,
                 owner,
                 validationFailed: {},
                 configError: null,
-            });
+            }));
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error);
             this.setState({ configError: detail });
